@@ -3,7 +3,7 @@
    libiptables-php http://sourceforge.net/projects/libiptphp
    This light-weight library provides you with a number of methods in 
    PHP to read and change different configurations of iptables rules.
-   Copyright (C) 2011 Koosha Khajeh Moogahi (koosha.khajeh@gmail.com)
+   Copyright (C) 2011, 2012 Koosha Khajeh Moogahi (koosha.khajeh@gmail.com)
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
