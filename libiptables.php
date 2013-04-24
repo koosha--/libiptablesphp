@@ -797,7 +797,7 @@ class IptablesConfig
 				 * Handling rules
 				 */
 				$rule = substr($buffer, $startRule);
-				$matches = preg_split('/(!\s+){0,1}\s+\-{1,2}/', $rule, NULL, PREG_GREP_INVERT);
+				$matches = preg_split('/(?:!\s+){0,1}\s+\-{1,2}/', $rule, NULL, PREG_GREP_INVERT);
 				$modules = array();
 				$invert = -1;
 				for ($i = 0; $i < count($matches); $i++) {
