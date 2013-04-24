@@ -699,14 +699,13 @@ class IptablesConfig
 	private function parseCounters($string)
 	{
 		$string = trim($string);
-		if (!preg_match('/\[\d+:\d+]/', $string)) {
+		if (!preg_match('/^\[(?P<pc>\d+):(?P<bc>\d+)]$/', $string, $matches)) {
 			return NULL;
 		}
-		$tmp = explode(':', $string);
 		$return = array();
-		$return['packet-counter'] = substr($tmp[0], 1);
-		$return['byte-counter'] = substr($tmp[1], 0, strlen($tmp[1]) - 1);
-		return $return;
+		$return['packet-counter'] = $matches['pc'];
+		$return['byte-counter'] = $matches['bc'];
+        return $return;
 	}
 
 
