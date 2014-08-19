@@ -27,6 +27,18 @@
  * @copyright (c) 2011 - 2013 Koosha K. M.
  * @license GPL
  */
+
+/**
+ * Modified by Jeremy Lisenby on 8/14/2014
+ * Added flushChain method
+ * Added IPv6 handling
+ * Customized serveral interfaces to allow passing of extra parameters
+ * Fixed bug in getReferringRules method, it was resolving rule index incorrectly
+ * Fixed bug in constructor, iptables-save is an executable, but "iptables-save -c" is not an executable
+ * Changed calls to iptables-* to optionally use sudo
+ * Added debug flags plus statements
+ */
+
 class IptablesConfig
 {
 	/**
@@ -69,8 +81,13 @@ class IptablesConfig
 	 * @param string $rulesFile The path of the rules file
 	 * @return void
 	 */
-	function __construct($rulesFile = NULL)
+	private $ipt_save;
+	private $ipt_restore;
+	private $sudo_cmd;
+	public $debug;
+	function __construct($rulesFile = NULL, $ipversion = 4, $sudo_cmd = '')
 	{
+		$this->debug = false;
 		$this->validTables = array('filter', 'nat', 'mangle', 'raw');
 		$this->builtin = array(
 		'filter' => array('INPUT', 'FORWARD', 'OUTPUT'),
@@ -78,21 +95,34 @@ class IptablesConfig
 		'mangle' => array('PREROUTING', 'OUTPUT', 'INPUT', 'FORWARD', 'POSTROUTING'),
 		'raw'    => array('PREROUTING', 'OUTPUT')
 		);
+
+		$this->sudo_cmd = '';
+		if ($sudo_cmd)
+			$this->sudo_cmd = $sudo_cmd.' ';
+
+		$this->ipt_save = '/sbin/iptables-save';
+		if ($ipversion == 6)
+			$this->ipt_save = '/sbin/ip6tables-save';
+
+		$this->ipt_restore = '/sbin/iptables-restore';
+		if ($ipversion == 6)
+			$this->ipt_restore = '/sbin/ip6tables-restore';
+
 		$fileString = '';
 		if ($rulesFile == NULL) {
-			$ipt_save = '/sbin/iptables-save -c';
 			$this->rulesFile = NULL;
-			if (is_executable($ipt_save)) {
-				exec($ipt_save, $output, $return_val);
+			if (is_executable($this->ipt_save)) {
+				exec($this->sudo_cmd.$this->ipt_save.' -c', $output, $return_val);
 				if ($return_val == 0) {
 					foreach ($output as $line)
 						$fileString .= $line."\n";
 				}
-				else
-					die ('Error: Unable to run iptables-save properly.');
+				else {
+					die ("Error: Unable to run $this->ipt_save properly. Is the module loaded in the kernel?");
+				}
 			}
 			else
-				die ('Error: Cannot find or execute iptables-save ('.$ipt_save.')');
+				die ('Error: Cannot find or execute iptables-save ('.$this->ipt_save.')');
 		}
 		else {
 			$this->rulesFile = $rulesFile;
@@ -163,8 +193,13 @@ class IptablesConfig
 	 */
 	public function addChain($table, $chainName, $packetcount = '0', $bytecount = '0')
 	{
-		if (!in_array($table, $this->validTables) || in_array($chainName, $this->getTableChains($table)) || !is_numeric($bytecount) || !is_numeric($bytecount))
+		if (!in_array($table, $this->validTables) || in_array($chainName, $this->getTableChains($table)) || !is_numeric($bytecount) || !is_numeric($bytecount)){
+			if ($this->debug) {
+				echo "addChain ($chainName) failed\n";
+				print_r(func_get_args());
+			}
 			return false;
+		}
 		if (!in_array($table, $this->getAllTables()) && in_array($table, $this->validTables))
 			$this->fileTree[$table] = array();
 		$this->fileTree[$table][$chainName] = array();
@@ -188,8 +223,13 @@ class IptablesConfig
 			!is_array($chains) || 
 			count($chains) == 0 || 
 			(count($chains) > 0 && !in_array($oldName, $chains)) ||
-			(count($chains) > 0 && in_array($newName, $chains) && $oldName != $newName))
+			(count($chains) > 0 && in_array($newName, $chains) && $oldName != $newName)){
+			if ($this->debug) {
+				echo "renameChain ($oldName) to ($newName) failed\n";
+				print_r(func_get_args());
+			}
 			return false;
+		}
 		else  {
 			if ($cascade)
 				if (($n = $this->getReferenceNum($table, $oldName)) != NULL && $n > 0) {
@@ -223,10 +263,34 @@ class IptablesConfig
 	 */
 	public function removeChain($table, $chain)
 	{
-		if (!in_array($table, $this->getAllTables()) || !in_array($chain, $this->getTableChains($table)) || $this->isBuiltinChain($table, $chain) || count($this->getReferenceNum($table, $chain)) > 0)
+		if (!in_array($table, $this->getAllTables()) || !in_array($chain, $this->getTableChains($table)) || $this->isBuiltinChain($table, $chain) || count($this->getReferenceNum($table, $chain)) > 0){
+			if ($this->debug) {
+				echo "removeChain ($chain) failed\n";
+				print_r(func_get_args());
+			}
 			return false;
+		}
 		unset($this->fileTree[$table][$chain]);
 		return true;
+	}
+	/**
+	 * Deletes all rules in $chain
+	 * @param string $table The name of table
+	 * @param string $chain The name of chain
+	 * @return boolean true on success; false otherwise
+	 */
+	public function flushChain($table, $chain)
+	{
+		if (isset($this->fileTree[$table][$chain]['rules']) && count($this->fileTree[$table][$chain]['rules'] > 0)) {
+			$this->fileTree[$table][$chain]['rules'] = array();
+			return true;
+		}
+
+		if ($this->debug) {
+			echo "flushChain ($chain) failed\n";
+			print_r(func_get_args());
+		}
+		return false;
 	}
 	/**
 	 * Returns the policy of a built-in chain.
@@ -259,6 +323,11 @@ class IptablesConfig
 			$this->fileTree[$table][$chain]['policy'] = $policy;
 			return true;
 		}
+
+		if ($this->debug) {
+			echo "setPolicy failed ($chain) ($policy)\n";
+			print_r(func_get_args());
+		}
 		return false;
 	}
 	/**
@@ -289,6 +358,10 @@ class IptablesConfig
 			$this->fileTree[$table][$chain]['byte-counter'] = $count;
 			return true;
 		}
+		if ($this->debug) {
+			echo "setChainByteCounter failed ($chain)\n";
+			print_r(func_get_args());
+		}
 		return false;
 	}
 	/**
@@ -315,6 +388,10 @@ class IptablesConfig
 		if (isset($this->fileTree[$table][$chain]) && is_numeric($count)) {
 			$this->fileTree[$table][$chain]['packet-counter'] = $count;
 			return true;
+		}
+		if ($this->debug) {
+			echo "setChainPacketCounter failed ($chain)\n";
+			print_r(func_get_args());
 		}
 		return false;
 	}
@@ -358,8 +435,8 @@ class IptablesConfig
 		$return = array();
 		foreach ($this->fileTree[$table] as $mychain => $children)
 			if (isset($children['rules']))
-				for ($i = 0; $i < count($children['rules']); $i++)
-					foreach ($children['rules'][$i] as $name => $value)
+				foreach ($children['rules'] as $i => $rules)
+					foreach ($rules as $name => $value)
 						if (($name == 'g' || $name == 'goto' || $name == 'j' || $name == 'jump') && trim($value) == $chain)
 							$return[] = array('chain' => $mychain, 'index' => $i);
 		return  $return;
@@ -414,8 +491,13 @@ class IptablesConfig
 	 */ 
 	public function insertRule($table, $chain, $index, array $ruleArray)
 	{
-		if (!isset($this->fileTree[$table][$chain]))
+		if (!isset($this->fileTree[$table][$chain])){
+			if ($this->debug) {
+				echo "insertRule to ($chain) failed\n";
+				print_r(func_get_args());
+			}
 			return false;
+		}
 		
 		if (isset($this->fileTree[$table][$chain]['rules']))
 			$c = count($this->fileTree[$table][$chain]['rules']);
@@ -450,6 +532,11 @@ class IptablesConfig
 				return true;
 			}
 		}
+
+		if ($this->debug) {
+			echo "appendRule to ($chain) failed\n";
+			print_r(func_get_args());
+		}
 		return false;
 	}
 	/**
@@ -464,6 +551,11 @@ class IptablesConfig
 		if (isset($this->fileTree[$table][$chain]['rules']) && 0 <= $index && $index < count($this->fileTree[$table][$chain]['rules'])) {
 			unset($this->fileTree[$table][$chain]['rules'][$index]);
 			return true;
+		}
+
+		if ($this->debug) {
+			echo "removeRule from ($chain) failed\n";
+			print_r(func_get_args());
 		}
 		return false;
 	}
@@ -492,6 +584,11 @@ class IptablesConfig
 				return true;
 			}
 		}
+
+		if ($this->debug) {
+			echo "replaceRule in ($chain) failed\n";
+			print_r(func_get_args());
+		}
 		return false;
 	}
 	/**
@@ -518,8 +615,13 @@ class IptablesConfig
 	 */
 	public function changeRuleIndex($table, $chain, $oldIndex, $newIndex)
 	{
-		if (!isset($this->fileTree[$table][$chain]['rules'][$oldIndex]) || $oldIndex == $newIndex)
+		if (!isset($this->fileTree[$table][$chain]['rules'][$oldIndex]) || $oldIndex == $newIndex) {
+			if ($this->debug) {
+				echo "changeRuleIndex in ($chain) failed\n";
+				print_r(func_get_args());
+			}
 			return false;
+		}
 		$tmp = $this->fileTree[$table][$chain]['rules'][$oldIndex];
 		if ($oldIndex < $newIndex)
 			for ($i = $oldIndex; $i < $newIndex; $i++)
@@ -560,6 +662,11 @@ class IptablesConfig
 			$this->fileTree[$table][$chain]['rules'][$ruleIndex]['byte-counter'] = $byteCounter;
 			return true;
 		}
+
+		if ($this->debug) {
+			echo "setRuleByteCounter in ($chain) failed\n";
+			print_r(func_get_args());
+		}
 		return false;
 	}
 	/**
@@ -591,6 +698,11 @@ class IptablesConfig
 			$this->fileTree[$table][$chain]['rules'][$ruleIndex]['packet-counter'] = $packetCounter;
 			return true;
 		}
+
+		if ($this->debug) {
+			echo "setRulePacketCounter in ($chain) failed\n";
+			print_r(func_get_args());
+		}
 		return false;
 	}
 	/**
@@ -614,8 +726,13 @@ class IptablesConfig
 	 */ 
 	public function commit($file = NULL)
 	{
-		if ($file == NULL && $this->rulesFile == NULL)
+		if ($file == NULL && $this->rulesFile == NULL) {
+			if ($this->debug) {
+				echo "commit failed\n";
+				print_r(func_get_args());
+			}
 			return false;
+		}
 		$time = date("D M j G:i:s T Y");
 		$content = "# Generated by libiptables-php on $time - github.com/koosha--/libiptablesphp\n";
 		foreach ($this->fileTree as $table => $chains) {
@@ -668,17 +785,24 @@ class IptablesConfig
 	/**
 	 * Applies the current state of rules to iptables in order to be used immediately
 	 * @param boolean $restoreCounters If set to true, current packet and byte counters will also be restored. If set to false, they will be ignored.
-	 * @param string $iptRestore The path of iptables-restore command. The default path is set to /sbin/iptables-restore.
+	 * @param string $iptRestore The path of iptables-restore command. The default path is set to use restore method established in constructor.
 	 * @return boolean true on success; false otherwise.
 	 */
-	public function applyNow($restoreCounters = true, $iptRestore = '/sbin/iptables-restore')
+	public function applyNow($restoreCounters = true, $iptRestore = NULL, $fileName = NULL)
 	{
+		if ($iptRestore === NULL)
+			$iptRestore = $this->ipt_restore;
+
 		if (is_executable($iptRestore)) {
-			$tmp_path = '/tmp/rules_tmp';
+			$tmp_path = $fileName;
+			if ($fileName === NULL) {
+				$date = rtrim(`/bin/date +"%s"`);
+				$tmp_path = "/tmp/rules_$date";
+			}
 			$this->commit($tmp_path);
 			if ($restoreCounters)
 				$iptRestore .= ' -c';
-			exec($iptRestore.' '.$tmp_path, $output, $return_val);
+			exec($this->sudo_cmd.$iptRestore.' '.$tmp_path, $output, $return_val);
 			if ($return_val == 0)
 				return true;
 			else {
