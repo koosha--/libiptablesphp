@@ -39,6 +39,11 @@
  * Added debug flags plus statements
  */
 
+/**
+ * Modified by Jeremy Lisenby on 9/4/2014
+ * Fixed problems with index management for rules arrays
+ */
+
 class IptablesConfig
 {
 	/**
@@ -234,21 +239,22 @@ class IptablesConfig
 			if ($cascade)
 				if (($n = $this->getReferenceNum($table, $oldName)) != NULL && $n > 0) {
 					$rules = $this->getReferringRules($table, $oldName);
-					for ($i = 0; $i < count($rules); $i++)
-						if (isset($this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['g']))
-							$this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['g'] = $newName;
-						elseif (isset($this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['goto']))
-							$this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['goto'] = $newName;
-						elseif (isset($this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['j']))
-							$this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['j'] = $newName;
-						elseif (isset($this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['jump']))
-							$this->fileTree[$table][$rules[$i]['chain']]['rules'][$rules[$i]['index']]['jump'] = $newName;
+					foreach ($rules as $rule) // $rule == ['chain' => chainName, 'index' => indexInChain]
+						if (isset($this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['g']))
+							$this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['g'] = $newName;
+						elseif (isset($this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['goto']))
+							$this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['goto'] = $newName;
+						elseif (isset($this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['j']))
+							$this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['j'] = $newName;
+						elseif (isset($this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['jump']))
+							$this->fileTree[$table][$rule['chain']]['rules'][$rule['index']]['jump'] = $newName;
 				}	
-			if (isset($this->fileTree[$table][$oldName]['rules']))
-				for ($i = 0; $i < count($this->fileTree[$table][$oldName]['rules']); $i++)
-					if (isset($this->fileTree[$table][$oldName]['rules'][$i]['A']) && trim($this->fileTree[$table][$oldName]['rules'][$i]['A']) == $oldName)
-						$this->fileTree[$table][$oldName]['rules'][$i]['A'] = $newName;
-
+			if (isset($this->fileTree[$table][$oldName]['rules'])) {
+				foreach ($this->fileTree[$table][$oldName]['rules'] as $rule) {
+					if (isset($rule['A']) && trim($rule['A']) == $oldName)
+						$rule['A'] = $newName;
+				}
+			}
 			$this->fileTree[$table][$newName] = $this->fileTree[$table][$oldName];
 			unset($this->fileTree[$table][$oldName]);
 			return true;
@@ -434,12 +440,18 @@ class IptablesConfig
 			return NULL;
 		$return = array();
 		foreach ($this->fileTree[$table] as $mychain => $children)
-			if (isset($children['rules']))
-				foreach ($children['rules'] as $i => $rules)
-					foreach ($rules as $name => $value)
+			if (isset($children['rules'])){
+				$i = 0;
+				foreach ($children['rules'] as $rule)
+				{
+					foreach ($rule as $name => $value)
 						if (($name == 'g' || $name == 'goto' || $name == 'j' || $name == 'jump') && trim($value) == $chain)
 							$return[] = array('chain' => $mychain, 'index' => $i);
-		return  $return;
+					$i++;
+				}
+			}
+		/* reverse the rules that the caller may iterate the list with foreach and delete from the chain. */
+		return  array_reverse($return);
 		
 	}
 	/**
@@ -499,16 +511,14 @@ class IptablesConfig
 			return false;
 		}
 		
-		if (isset($this->fileTree[$table][$chain]['rules']))
-			$c = count($this->fileTree[$table][$chain]['rules']);
-		else
-			$c = 0;
+		if (!isset($this->fileTree[$table][$chain]['rules']))
+			$this->fileTree[$table][$chain]['rules'] = array();
+
+		$c = count($this->fileTree[$table][$chain]['rules']);
+
 		/* If the rule should be in the middle of rules array, we have to shift the remaining rules after the $index */
 		if (0 <= $index && $index <= $c) {
-			$rest = array_slice($this->fileTree[$table][$chain]['rules'], $index);
-			$this->fileTree[$table][$chain]['rules'][$index] = $ruleArray;
-			for ($i = $index + 1; $i <= $c; $i++)
-				$this->fileTree[$table][$chain]['rules'][$i] = $rest[$i - $index - 1];
+			array_splice($this->fileTree[$table][$chain]['rules'], $index, 0, array($ruleArray));
 		}
 		elseif ($index >= $c)
 			$this->fileTree[$table][$chain]['rules'][] = $ruleArray;
@@ -525,12 +535,10 @@ class IptablesConfig
 	public function appendRule($table, $chain, array $ruleArray)
 	{
 		if (isset($this->fileTree[$table][$chain])) {
-			if (isset($this->fileTree[$table][$chain]['rules']) && ($c = count($this->fileTree[$table][$chain]['rules']) >= 0))
-				return $this->insertRule($table, $chain, $c, $ruleArray);
-			else {
-				$this->fileTree[$table][$chain]['rules'][] = $ruleArray;
-				return true;
-			}
+			if (!isset($this->fileTree[$table][$chain]['rules']))
+				$this->fileTree[$table][$chain]['rules'] = array();
+			$this->fileTree[$table][$chain]['rules'][] = $ruleArray;
+			return true;
 		}
 
 		if ($this->debug) {
@@ -549,7 +557,7 @@ class IptablesConfig
 	public function removeRule($table, $chain, $index)
 	{
 		if (isset($this->fileTree[$table][$chain]['rules']) && 0 <= $index && $index < count($this->fileTree[$table][$chain]['rules'])) {
-			unset($this->fileTree[$table][$chain]['rules'][$index]);
+			array_splice($this->fileTree[$table][$chain]['rules'], $index, 1);
 			return true;
 		}
 
@@ -623,14 +631,8 @@ class IptablesConfig
 			return false;
 		}
 		$tmp = $this->fileTree[$table][$chain]['rules'][$oldIndex];
-		if ($oldIndex < $newIndex)
-			for ($i = $oldIndex; $i < $newIndex; $i++)
-				$this->fileTree[$table][$chain]['rules'][$i] = $this->fileTree[$table][$chain]['rules'][$i + 1]; /* Shift to the left */
-		else
-			for ($i = $oldIndex; $i > $newIndex; $i--)
-				$this->fileTree[$table][$chain]['rules'][$i] = $this->fileTree[$table][$chain]['rules'][$i - 1]; /* Shift to the right */
-				
-		$this->fileTree[$table][$chain]['rules'][$newIndex] = $tmp;
+		$this->removeRule($table, $chain, $oldIndex);
+		$this->insertRule($table, $chain, $newIndex, $tmp);
 		return true;
 	}
 	/**
